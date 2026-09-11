@@ -1,0 +1,13 @@
+# Julia
+Manifest.toml
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+
+# Generated output
+output/
+*.png
+
+# Editor / OS
+.DS_Store
+*.swp
