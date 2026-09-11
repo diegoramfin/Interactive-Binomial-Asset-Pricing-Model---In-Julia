@@ -11,7 +11,7 @@ user enters nothing.
 module Params
 
 export ModelParams, risk_neutral_prob, risk_neutral_down_prob, validate,
-       parse_float, parse_int, parse_optional_float
+       parse_float, parse_int, parse_optional_float, parse_choice
 
 """
     ModelParams
@@ -131,6 +131,20 @@ function parse_int(str::AbstractString, name::AbstractString)
     v === nothing && throw(ArgumentError("'$s' is not a valid integer for $name."))
     v ≥ 1 || throw(ArgumentError("$name must be at least 1 (got $v)."))
     return v
+end
+
+"""
+    parse_choice(str::AbstractString, name::AbstractString, allowed) -> Symbol
+
+Parse a case-insensitive menu pick; `str` must be one of the strings in
+`allowed` after trimming/lowercasing, else `ArgumentError`. Returns the
+choice as a `Symbol` — used for the derivative-type and call/put prompts.
+"""
+function parse_choice(str::AbstractString, name::AbstractString, allowed)
+    s = lowercase(strip(str))
+    s in allowed ||
+        throw(ArgumentError("$name must be one of: $(join(allowed, ", ")) (got '$s')."))
+    return Symbol(s)
 end
 
 end # module Params

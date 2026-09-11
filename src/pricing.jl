@@ -61,7 +61,7 @@ Print a human-readable valuation report to `io`.
 function summarize(io::IO, v::StockValuation, p::ModelParams)
     n, r = p.n, p.r
     q_down = risk_neutral_down_prob(p)
-    level_sums = probability_level_sums(v.q, n)
+    level_sums = probability_level_sums(v.q, q_down, n)
     max_dev = maximum(s -> abs(s - 1), level_sums)
     ok = all(s -> isapprox(s, 1.0; atol = 1e-10), level_sums)
 

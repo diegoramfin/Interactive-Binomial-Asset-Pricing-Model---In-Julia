@@ -28,31 +28,56 @@ You will be prompted for:
 
 | Prompt | Meaning | Rule |
 |---|---|---|
+| `Derivative type` | `european`, `american` or `lookback` | one of the three |
+| `Call or put` | option payoff direction | `call` or `put` |
+| `Strike price (K)` | exercise strike | > 0 — **skipped for lookbacks** (floating strike) |
+| `Capital to deploy` | cash funding the replicating hedge | > 0 |
 | `Stock price at time 0 (S0)` | initial stock price | > 0 |
 | `Up factor (u)` | multiplier on an up move | > 0 and > d |
 | `Down factor (d)` | multiplier on a down move | > 0 and < u |
-| `Number of periods (n)` | depth of the tree | ≥ 1 (≤ 20 for path plots) |
+| `Number of periods (n)` | depth of the tree | ≥ 1 (≤ 20 for path plots / lookbacks) |
 | `Risk-free rate (r) [0.05]` | one-period rate, e.g. `0.05` = 5% | > -1 — **press Enter to accept the 0.05 default** |
 
 Invalid input is re-prompted with a reason; the no-arbitrage condition
 `d < 1 + r < u` is enforced before any pricing happens.
 
+Lookback contracts are floating-strike, as in the lecture notes: the put
+pays `max S − S_T` and the call pays `S_T − min S` over the whole path.
+
 ## 4. Example session
 
-Inputs `100`, `1.2`, `0.8`, `3`, and Enter for the rate produce:
+Contract `european` `call` `K=105`, capital `1000`, market inputs `100`,
+`1.2`, `0.8`, `3`, and Enter for the rate produce:
 
 ```text
 ──────────────────────────────────────────────────────────
  Binomial model: S0=100.0, u=1.2, d=0.8, n=3, r=0.05
 ──────────────────────────────────────────────────────────
- Risk-neutral up probability q      : 0.625
+ Risk-neutral up prob p̃             : 0.625
+ Risk-neutral down prob q̃           : 0.375
+ p̃ + q̃  (must equal 1)              : 1.0
+ Recursive level-mass check         : PASS  (levels 0–3, max |Σ−1| = 0.0)
  E^Q[S_n]  (terminal expectation)   : 115.7625
  S0 · (1+r)^n  (martingale check)   : 115.7625
  Forward price (delivery at n)      : 115.7625
  Fair value of stock at t=0         : 100.0
 ──────────────────────────────────────────────────────────
 
-Enumerated 8 path-dependent price paths.
+ Option: european call, K=105.0
+ Option fair value V0               : 18.170959
+ E^Q[payoff] (undiscounted)         : 21.035156
+ Capital deployed                   : 1000.0
+ Contracts replicated (capital / V0): 55.032869
+ Expected payoff × contracts        : 1157.625
+ Initial hedge Δ0 (per contract)    : 0.618622
+ Shares to hold now (N · Δ0)        : 34.044568
+ Replication X_k = V_k              : PASS (max err 1.42e-14, all 2^3 paths, every step)
+
+ Delta hedge Δ_k (shares per contract):
+  k=0:  0.6186
+  k=1:  0.7902   0.1897
+  k=2:  1.0   0.2656   0.0
+ … plus a per-path wealth table showing X_k = V_k on every outcome …
 ```
 
 followed by two terminal plots (recombining price tree, and every individual
@@ -91,6 +116,13 @@ julia> using BinomialAssetPricing.RiskNeutral: european_call_payoff
 julia> using BinomialAssetPricing.Lattice: price
 julia> tree = price(european_call_payoff(100), v.lattice, p.r, v.q)
 julia> tree[1][1]                             # time-0 call value
+
+# Or the full contract facade — pricing + delta hedge + replication check:
+julia> ov = value_option(p, OptionSpec(:american, :put, 105.0), 1000.0)
+julia> ov.V0                                  # american put fair value
+julia> ov.exercise_premium                    # vs the european put
+julia> ov.deltas[1][1]                        # Δ0, shares per contract
+julia> ov.contracts                           # how many the capital hedges
 ```
 
 ## 7. Run the tests

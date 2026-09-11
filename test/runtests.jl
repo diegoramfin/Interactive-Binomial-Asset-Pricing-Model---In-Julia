@@ -27,11 +27,13 @@ using BinomialAssetPricing.Pricing
     @test parse_int(" 5 ", "n") == 5
     @test parse_optional_float("", "r", 0.05) == 0.05        # empty → default
     @test parse_optional_float(" 0.03 ", "r", 0.05) == 0.03
+    @test parse_choice(" American ", "kind", ("european", "american")) == :american
     @test_throws ArgumentError parse_float("", "S0")
     @test_throws ArgumentError parse_float("abc", "S0")
     @test_throws ArgumentError parse_float("NaN", "S0")
     @test_throws ArgumentError parse_int("3.5", "n")
     @test_throws ArgumentError parse_int("0", "n")
+    @test_throws ArgumentError parse_choice("barrier", "kind", ("european", "american"))
 end
 
 @testset "Lattice" begin
@@ -65,15 +67,19 @@ end
         @test forward_price(p) ≈ S0 * (1 + r)^n             # cost of carry
     end
 
-    # Recursive mass propagation: each node splits its mass p̃/q̃, so a valid
-    # measure keeps every tree level — and the 2^n terminal paths — at sum 1.
+    # Recursive mass propagation: each node splits its mass into the two
+    # independently derived p̃/q̃, so a valid measure keeps every tree level —
+    # and the 2^n terminal paths — at sum 1.
     for n in (1, 2, 3, 10)
-        sums = probability_level_sums(0.625, n)
+        sums = probability_level_sums(0.625, 0.375, n)
         @test length(sums) == n + 1
         @test all(s -> s ≈ 1.0, sums)
     end
-    @test_throws ArgumentError probability_level_sums(1.5, 3)
-    @test_throws ArgumentError probability_level_sums(0.5, 0)
+    # Mismatched branches (p̃ + q̃ ≠ 1) must NOT conserve mass.
+    @test !all(s -> s ≈ 1.0, probability_level_sums(0.6, 0.5, 3))
+    @test_throws ArgumentError probability_level_sums(1.5, 0.4, 3)
+    @test_throws ArgumentError probability_level_sums(0.5, -0.2, 3)
+    @test_throws ArgumentError probability_level_sums(0.5, 0.5, 0)
 end
 
 @testset "Paths" begin
@@ -116,25 +122,96 @@ end
     @test occursin("PASS", s)                               # level-mass check
 end
 
+@testset "Options" begin
+    using BinomialAssetPricing.Options
+
+    # Lecture lookback example: S0=4, u=2, d=1/2, r=1/4, n=3.
+    # Floating-strike lookback put → V0 = 1.376, Δ0 = 1.04/6 ≈ 0.1733.
+    p = ModelParams(4.0, 2.0, 0.5, 3, 0.25)
+    ov = value_option(p, OptionSpec(:lookback, :put), 1000.0)
+    @test ov.V0 ≈ 1.376 atol = 1e-10
+    @test ov.deltas[1][1] ≈ 1.04 / 6 atol = 1e-10
+    @test ov.replication_error ≤ 1e-10        # X_k = V_k on all 8 paths
+    @test ov.contracts ≈ 1000.0 / 1.376
+
+    # Put–call parity on the lattice: C − P = S0 − K(1+r)^{-n}.
+    p2 = ModelParams(100.0, 1.2, 0.8, 4, 0.05)
+    c = value_option(p2, OptionSpec(:european, :call, 105.0), 100.0)
+    put = value_option(p2, OptionSpec(:european, :put, 105.0), 100.0)
+    @test c.V0 - put.V0 ≈ 100.0 - 105.0 / 1.05^4 atol = 1e-10
+    @test c.replication_error ≤ 1e-8
+    @test c.expected_payoff ≈ c.V0 * 1.05^4    # V0 = E^Q[payoff] / (1+r)^n
+
+    # American call on a non-dividend stock: early exercise is never
+    # optimal → premium 0 and price equals the European call.
+    ac = value_option(p2, OptionSpec(:american, :call, 105.0), 100.0)
+    @test ac.exercise_premium ≈ 0.0 atol = 1e-10
+    @test ac.V0 ≈ c.V0 atol = 1e-10
+
+    # American put is worth strictly more here; its premium is positive.
+    ap = value_option(p2, OptionSpec(:american, :put, 105.0), 100.0)
+    @test ap.V0 > put.V0
+    @test ap.exercise_premium > 0
+    @test ap.replication_error ≤ 1e-8
+    @test isfinite(ap.expected_payoff) && ap.expected_payoff > 0
+
+    # A worthless option still prices, but capital sizing is n/a (not Inf).
+    zero = value_option(p2, OptionSpec(:european, :call, 10_000.0), 100.0)
+    @test zero.V0 == 0.0
+    @test isnan(zero.contracts)
+
+    # Input validation.
+    @test_throws ArgumentError value_option(p2, OptionSpec(:european, :call, -1.0), 100)
+    @test_throws ArgumentError value_option(p2, OptionSpec(:exotic, :call, 100.0), 100)
+    @test_throws ArgumentError value_option(p2, OptionSpec(:european, :call, 100.0), -5)
+    @test_throws ArgumentError value_option(p2, OptionSpec(:european, :call, 105.0), Inf)
+    @test_throws ArgumentError value_option(ModelParams(100, 1.2, 0.8, 25),
+                                            OptionSpec(:lookback, :put), 100)
+    @test_throws ArgumentError path_payoff(OptionSpec(:exotic, :straddle, 1.0),
+                                           [100.0, 120.0])
+
+    io = IOBuffer()
+    summarize_option(io, ov)
+    s = String(take!(io))
+    @test occursin("1.376", s)
+    @test occursin("PASS", s)
+
+    io0 = IOBuffer()
+    summarize_option(io0, zero)
+    s0 = String(take!(io0))
+    @test occursin("n/a (V0 = 0)", s0)
+    @test !occursin("Inf", s0) && !occursin("NaN", s0)
+end
+
 @testset "Interface" begin
     using BinomialAssetPricing.Interface
     using BinomialAssetPricing.Plotting
 
-    # Empty risk-free rate → default 0.05; bad values re-prompt.
-    input = IOBuffer("100\n1.2\n0.8\n3\n\n")                  # r left empty
+    # Contract block first (type, call/put, K, capital), then market
+    # params; empty risk-free rate → default 0.05; bad values re-prompt.
+    input = IOBuffer("european\ncall\n105\n1000\n100\n1.2\n0.8\n3\n\n")
     out = IOBuffer()
-    v = Interface.run(input, out; plot = :none)
+    res = Interface.run(input, out; plot = :none)
     s = String(take!(out))
-    @test v.S0_fair ≈ 100.0 atol = 1e-8
+    @test res.stock.S0_fair ≈ 100.0 atol = 1e-8
+    @test res.option.V0 > 0
     @test occursin("Enumerated 8", s)                         # 2^3 paths
     @test occursin("[0.05]", s)                               # default shown in prompt
+    @test occursin("PASS", s)                                 # replication check
 
     # Invalid entries trigger re-prompts, then succeed.
-    input2 = IOBuffer("-5\n100\n1.2\n0.8\n2\n0.03\n")
+    input2 = IOBuffer("european\nput\n50\n500\n-5\n100\n1.2\n0.8\n2\n0.03\n")
     out2 = IOBuffer()
-    v2 = Interface.run(input2, out2; plot = :none)
-    @test v2.q ≈ (1.03 - 0.8) / 0.4
+    res2 = Interface.run(input2, out2; plot = :none)
+    @test res2.stock.q ≈ (1.03 - 0.8) / 0.4
     @test occursin("strictly positive", String(take!(out2)))
+
+    # Lookback end-to-end (no strike prompt): S0=4,u=2,d=0.5,n=3,r=0.25.
+    input3 = IOBuffer("lookback\nput\n100\n4\n2\n0.5\n3\n0.25\n")
+    out3 = IOBuffer()
+    res3 = Interface.run(input3, out3; plot = :none)
+    @test res3.option.V0 ≈ 1.376 atol = 1e-10
+    @test occursin("lookback put", String(take!(out3)))
 
     # Terminal plotting works headlessly (fallback or UnicodePlots), PNG skipped.
     io = IOBuffer()

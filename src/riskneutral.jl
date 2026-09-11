@@ -57,18 +57,23 @@ cost-of-carry forward price.
 forward_price(p::ModelParams) = expected_terminal_stock(p)
 
 """
-    probability_level_sums(p_up::Real, n::Integer) -> Vector{Float64}
+    probability_level_sums(p_up::Real, p_down::Real, n::Integer)
+        -> Vector{Float64}
 
 Propagate probability mass recursively through the recombining tree: the
 root holds mass 1 and every node splits its mass into `p_up` for the up
-child and `1 - p_up` for the down child. Returns the total mass of each
+child and `p_down` for the down child. Returns the total mass of each
 level `k = 0…n`.
 
 For a genuine probability measure every level sums to exactly 1 — the
 `k = n` entry is `Σ_ω P(ω)` over all `2^n` paths, grouped by terminal node.
+Both branch probabilities are taken as arguments (rather than deriving
+`1 - p_up` internally) so the check validates the two independently
+derived formulas `p̃` and `q̃` instead of being a tautology.
 """
-function probability_level_sums(p_up::Real, n::Integer)
-    0 < p_up < 1 || throw(ArgumentError("p_up must lie in (0, 1), got $p_up."))
+function probability_level_sums(p_up::Real, p_down::Real, n::Integer)
+    0 ≤ p_up ≤ 1 || throw(ArgumentError("p_up must lie in [0, 1], got $p_up."))
+    0 ≤ p_down ≤ 1 || throw(ArgumentError("p_down must lie in [0, 1], got $p_down."))
     n ≥ 1 || throw(ArgumentError("n must be at least 1 (got $n)."))
 
     level = [1.0]                              # period 0: all mass at the root
@@ -77,7 +82,7 @@ function probability_level_sums(p_up::Real, n::Integer)
         nxt = zeros(Float64, k + 1)
         for i in 1:k
             nxt[i]     += p_up * level[i]        # up child keeps index i
-            nxt[i + 1] += (1 - p_up) * level[i]  # down child shifts to i + 1
+            nxt[i + 1] += p_down * level[i]      # down child shifts to i + 1
         end
         push!(sums, sum(nxt))
         level = nxt

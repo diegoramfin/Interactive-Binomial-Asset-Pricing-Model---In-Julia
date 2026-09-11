@@ -5,13 +5,19 @@ of isolated Julia modules and driven by a small interactive entry point.
 
 > 🚀 **New here?** See [QUICKSTART.md](QUICKSTART.md) to get running in five minutes.
 
-You enter **S₀** (stock price at time 0), **u** (up factor), **d** (down
-factor) and the number of periods **n**. The one-period risk-free rate **r**
-defaults to **0.05** when you leave the prompt empty. The program validates
-the no-arbitrage condition `d < 1 + r < u`, prices the stock by risk-neutral
-backward induction on a recombining lattice, enumerates **every path-dependent
-price path** (`2^n` of them), and graphs each path up to the final period —
-in the terminal and, when available, as PNG images.
+You pick a contract — **european / american / lookback**, then **call** or
+**put**, plus a strike **K** for vanilla options — and enter **S₀** (stock
+price at time 0), **u** (up factor), **d** (down factor) and the number of
+periods **n**. The one-period risk-free rate **r** defaults to **0.05** when
+you leave the prompt empty. The program validates the no-arbitrage condition
+`d < 1 + r < u`, prices the stock by risk-neutral backward induction on a
+recombining lattice, prices the option (lattice for european/american, the
+full `2^n` path tree for the floating-strike lookback), and computes the
+delta hedge `Δ_n(ω)` — rolling the replicating portfolio `X` forward along
+every path to show `X_k = V_k` regardless of the outcome. Finally it
+enumerates **every path-dependent price path** (`2^n` of them) and graphs
+each path up to the final period — in the terminal and, when available, as
+PNG images.
 
 ## Quick start
 
@@ -23,17 +29,24 @@ julia --project=. main.jl
 Example session (with a pre-planted input file):
 
 ```text
+Derivative type (european/american/lookback): european
+Call or put (call/put): call
+Strike price (K): 105
+Capital to deploy for the hedge: 1000
 Stock price at time 0 (S0): 100
 Up factor (u): 1.2
 Down factor (d): 0.8
 Number of periods (n): 3
-Risk-free rate (r) [default 0.05]:            ← just press Enter
+Risk-free rate (r) [0.05]:                    ← just press Enter
 ```
 
 Output:
 
-- a valuation summary (risk-neutral probability `q`, martingale checks,
-  forward price);
+- a valuation summary (risk-neutral probabilities `p̃`/`q̃`, martingale
+  checks, forward price);
+- an option block: fair value, `E^Q[payoff]` (per contract and scaled to
+  the deployed capital), the per-node delta hedge, and a per-path wealth
+  table showing the replication matching `V_k` step by step;
 - the recombining price tree drawn as terminal plot;
 - a plot of all 2^n price paths through the final period;
 - PNG versions written to `output/` when Plots.jl is installed.
@@ -48,6 +61,7 @@ src/
 ├── lattice.jl                # recombining price lattice + backward induction
 ├── riskneutral.jl            # payoffs & martingale/forward identities
 ├── paths.jl                  # explicit enumeration of all 2^n price paths
+├── options.jl                # option specs, american/lookback pricing, delta hedge, replication check
 ├── plotting.jl               # UnicodePlots terminal graphs, ASCII fallback, Plots.jl PNGs
 ├── pricing.jl                # valuation facade (value_stock_tree, summarize)
 └── interface.jl              # interactive prompts + run() orchestration
@@ -75,11 +89,30 @@ Any European claim with terminal payoff `g(S_n)` is then worth
 V₀ = E^Q[g(S_n)] / (1 + r)^n
 ```
 
-computed on the lattice by backward induction `V(k,i) = [q·V(k+1,i) +
-(1-q)·V(k+1,i+1)] / (1+r)`. For the stock itself (`g = identity`) this returns
+computed on the lattice by backward induction `V(k,i) = [p̃·V(k+1,i) +
+q̃·V(k+1,i+1)] / (1+r)`. For the stock itself (`g = identity`) this returns
 `S₀` — the built-in sanity check. `RiskNeutral.expected_terminal_stock`
 verifies `E^Q[S_n] = S₀(1+r)^n` directly via the binomial sum, and
 `forward_price` identifies the period-`n` forward as `S₀(1+r)^n`.
+
+## Options, delta hedging and replication
+
+`Options.value_option` prices a contract and its replicating hedge:
+
+- **european** call/put — backward induction of `(S_n−K)⁺` / `(K−S_n)⁺`.
+- **american** call/put — same, but `V = max(exercise, continuation)` at
+  every node; nodes where early exercise is optimal are flagged and the
+  early-exercise premium over the european twin is reported.
+- **lookback** call/put — floating-strike path-dependent claim
+  (`S_T − min S` / `max S − S_T`), priced on the full `2^n` path tree,
+  so `n ≤ 20`.
+
+The delta hedge at each node is `Δ = (V(H) − V(T)) / (S(H) − S(T))`, and
+the replicating wealth `X_{k+1} = Δ_k S_{k+1} + (1+r)(X_k − Δ_k S_k)` is
+rolled forward from `X_0 = V_0` along all `2^n` paths — the report checks
+`X_k(ω) = V_k(ω)` at every step (up to the exercise time for american
+contracts). The capital you enter sizes the position as
+`contracts = capital / V₀`.
 
 ## Graphing
 
@@ -105,6 +138,13 @@ using BinomialAssetPricing.RiskNeutral: european_call_payoff
 using BinomialAssetPricing.Lattice: price
 tree = price(european_call_payoff(100), v.lattice, p.r, v.q)
 tree[1][1]                                  # time-0 call value
+
+# Full contract facade — pricing + delta hedge + replication check:
+ov = value_option(p, OptionSpec(:american, :put, 105.0), 1000.0)
+ov.V0                                       # fair value
+ov.exercise_premium                         # vs the european twin
+ov.deltas[1][1]                             # Δ0 in shares per contract
+ov.contracts                                # contracts the capital replicates
 ```
 
 ## Tests

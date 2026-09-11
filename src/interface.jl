@@ -1,20 +1,47 @@
 """
     interface.jl
 
-Interactive terminal interface: prompts the user for the model inputs, applies
-defaults (risk-free rate defaults to 0.05 when nothing is entered), re-prompts
-on invalid input, and runs the whole pipeline — summary, path enumeration and
-graphs (terminal + PNG).
+Interactive terminal interface: prompts the user for the contract to price
+(derivative type, call/put, strike), the model inputs, and the capital to
+deploy into the hedge; applies defaults (risk-free rate defaults to 0.05
+when nothing is entered), re-prompts on invalid input, and runs the whole
+pipeline — stock valuation summary, option valuation with the delta hedge
+and replication check, path enumeration and graphs (terminal + PNG).
 """
 module Interface
 
-using ..Params: ModelParams, validate, risk_neutral_prob,
-                parse_float, parse_optional_float, parse_int
-using ..Pricing: StockValuation, value_stock_tree, summarize
-using ..Paths: PathSet, enumerate_paths, MAX_ENUM_PATHS
+using ..Params: ModelParams, parse_float, parse_optional_float, parse_int,
+                parse_choice
+using ..Pricing: value_stock_tree, summarize
+using ..Options: OptionSpec, value_option, summarize_option
+using ..Paths: enumerate_paths, MAX_ENUM_PATHS
 using ..Plotting: plot_price_tree, plot_paths, save_price_tree_png, save_paths_png
 
-export ask_params, run
+export ask_params, ask_contract, run
+
+"""
+    ask_contract([io_in = stdin, io_out = stdout]) -> (OptionSpec, Float64)
+
+Prompt for the contract first — derivative type
+(`european`/`american`/`lookback`) then `call`/`put` — then the strike `K`
+(skipped for lookbacks, which are floating-strike), and finally the capital
+to deploy into the replicating hedge.
+"""
+function ask_contract(io_in::IO = stdin, io_out::IO = stdout)
+    kinds = ("european", "american", "lookback")
+    kind = _ask_one(io_in, io_out, "Derivative type ($(join(kinds, "/"))): ",
+                    s -> parse_choice(s, "Derivative type", kinds), _ -> true)
+    callput = _ask_one(io_in, io_out, "Call or put (call/put): ",
+                       s -> parse_choice(s, "Option", ("call", "put")), _ -> true)
+    K = kind == :lookback ? NaN :
+        _ask_one(io_in, io_out, "Strike price (K): ",
+                 s -> parse_float(s, "K"),
+                 v -> v > 0 || "K must be strictly positive")
+    capital = _ask_one(io_in, io_out, "Capital to deploy for the hedge: ",
+                       s -> parse_float(s, "capital"),
+                       v -> v > 0 || "capital must be strictly positive")
+    return OptionSpec(kind, callput, K), capital
+end
 
 """
     ask_params([io_in = stdin, io_out = stdout]) -> ModelParams
@@ -85,15 +112,20 @@ function _ask_one(io_in::IO, io_out::IO, prompt::AbstractString, parser, validat
 end
 
 """
-    run([io_in = stdin, io_out = stdout]; plot::Symbol = :both) -> StockValuation
+    run([io_in = stdin, io_out = stdout]; plot::Symbol = :both)
+        -> NamedTuple
 
-Full interactive session: ask for parameters, print the valuation summary,
-enumerate every path-dependent price path, draw the price tree and all paths
-up to the final period in the terminal, and attempt PNG output.
+Full interactive session: ask for the contract and capital, then the model
+parameters; print the stock valuation summary followed by the option block
+(fair value, delta hedge per node, per-path replicating wealth); enumerate
+every path-dependent price path, draw the price tree and all paths up to the
+final period in the terminal, and attempt PNG output.
 
+Returns `(stock = StockValuation, option = OptionValuation-or-nothing)`.
 `plot` selects terminal-only (`:terminal`), PNG-only (`:png`) or both.
 """
 function run(io_in::IO = stdin, io_out::IO = stdout; plot::Symbol = :both)
+    spec, capital = ask_contract(io_in, io_out)
     p = ask_params(io_in, io_out)
     println(io_out)
     println(io_out, "Computing valuation for S0=$(p.S0), u=$(p.u), d=$(p.d), n=$(p.n), r=$(p.r) ...")
@@ -102,13 +134,27 @@ function run(io_in::IO = stdin, io_out::IO = stdout; plot::Symbol = :both)
     summarize(io_out, val, p)
     println(io_out)
 
+    local ov = nothing
+    if spec.kind == :lookback && p.n > MAX_ENUM_PATHS
+        println(io_out, "Lookback needs the full 2^$(p.n) path tree — " *
+                        "cap is n ≤ $MAX_ENUM_PATHS; skipping option valuation.")
+    else
+        ov = value_option(p, spec, capital)
+        summarize_option(io_out, ov)
+    end
+    println(io_out)
+
+    result = (stock = val, option = ov)
     n = p.n
     if n > MAX_ENUM_PATHS
-        println(io_out, "n = $n gives 2^$n paths — skipping explicit per-path enumeration (cap n ≤ $MAX_ENUM_PATHS).")
-        return val
+        println(io_out, "n = $n gives 2^$n paths — skipping explicit per-path " *
+                        "enumeration (cap n ≤ $MAX_ENUM_PATHS).")
+        return result
     end
 
-    ps = enumerate_paths(p; lattice = val.lattice)
+    # value_option already enumerated the same paths — reuse them for the plots.
+    ps = ov !== nothing && ov.paths !== nothing ?
+         ov.paths : enumerate_paths(p; lattice = val.lattice)
 
     println(io_out, "Enumerated $(length(ps.prices)) path-dependent price paths.")
     println(io_out)
@@ -134,7 +180,7 @@ function run(io_in::IO = stdin, io_out::IO = stdout; plot::Symbol = :both)
             end
         end
     end
-    return val
+    return result
 end
 
 end # module Interface

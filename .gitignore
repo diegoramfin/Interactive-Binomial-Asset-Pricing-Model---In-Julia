@@ -11,3 +11,4 @@ output/
 # Editor / OS
 .DS_Store
 *.swp
+.devin/

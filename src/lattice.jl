@@ -17,7 +17,7 @@ from terminal values `V(n, ·)` to the root, returning the full value tree.
 """
 module Lattice
 
-export build_price_lattice, price, node_up, node_down
+export build_price_lattice, price, price_american, node_up, node_down
 
 """
     build_price_lattice(S0::Real, u::Real, d::Real, n::Integer) -> Vector{Vector{Float64}}
@@ -83,6 +83,41 @@ function price(payoff::Function, lattice::Vector{Vector{Float64}},
         nxt = values[k + 2]                         # child row (time step k+1)
         for i in 1:(k + 1)
             @inbounds row[i] = disc * (q * nxt[i] + (1 - q) * nxt[i + 1])
+        end
+        values[k + 1] = row
+    end
+    return values
+end
+
+"""
+    price_american(payoff::Function, lattice::Vector{Vector{Float64}}, r::Real, q::Real)
+        -> Vector{Vector{Float64}}
+
+Backward-induction value tree for an American claim with immediate-exercise
+payoff `payoff(S)`. At every node the holder chooses the better of
+
+    V(k, i) = max(payoff(S(k,i)),  [q·V(k+1,i) + (1-q)·V(k+1,i+1)] / (1 + r))
+
+so the tree is identical to [`price`](@ref) apart from the per-node
+early-exercise `max`.
+"""
+function price_american(payoff::Function, lattice::Vector{Vector{Float64}},
+                        r::Real, q::Real)
+    n = length(lattice) - 1
+    0 < q < 1 || throw(ArgumentError("Risk-neutral probability q must lie in (0, 1), got $q."))
+    r > -1 || throw(ArgumentError("Risk-free rate must be > -1, got $r."))
+
+    disc = 1 / (1 + r)
+    values = Vector{Vector{Float64}}(undef, n + 1)
+    values[n + 1] = Float64[payoff(S) for S in lattice[n + 1]]
+
+    for k in (n - 1):-1:0                           # periods n-1 … 0
+        row = Vector{Float64}(undef, k + 1)         # value-tree row for time step k has k+1 nodes
+        nxt = values[k + 2]                         # child row (time step k+1)
+        for i in 1:(k + 1)
+            exercise = payoff(lattice[k + 1][i])
+            @inbounds continuation = disc * (q * nxt[i] + (1 - q) * nxt[i + 1])
+            row[i] = max(exercise, continuation)
         end
         values[k + 1] = row
     end
